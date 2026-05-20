@@ -1,33 +1,67 @@
-name: Release kakoune-lsp
+name: release
 
 on:
   push:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
-  release:
-    runs-on: ${{ matrix.os }}
+  build-linux:
+    name: build (${{ matrix.target }})
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
         include:
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
+          - target: x86_64-linux
+            cargo_target: x86_64-unknown-linux-musl
+          - target: aarch64-linux
+            cargo_target: aarch64-unknown-linux-musl
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
         with:
-          fetch-depth: 0 # for git describe --tags
-      - name: Build
-        run: ci/build-release.sh
-      - name: Extract release notes
-        run: ci/latest-changelog.sh > latest-changelog.md
-      - name: Release
-        uses: softprops/action-gh-release@v1
+          version: 0.16.0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: add musl targets
+        run: rustup target add ${{ matrix.cargo_target }}
+
+      - name: install cargo-zigbuild
+        run: cargo install cargo-zigbuild
+
+      - name: build and package
+        run: |
+          make package DIST_TARGET=${{ matrix.target }}
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
+          ARTIFACT=kak-lsp-${VERSION}-${{ matrix.target }}
+          cd dist && tar -czf ../${ARTIFACT}.tar.gz ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
         with:
-          files: kakoune-lsp-*-*.tar.gz
-          body_path: latest-changelog.md
+          name: ${{ matrix.target }}
+          path: "*.tar.gz"
+
+  release:
+    name: release
+    needs: build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: artifacts/
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
+          generate_release_notes: true
 
